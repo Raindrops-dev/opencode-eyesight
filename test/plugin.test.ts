@@ -272,3 +272,44 @@ test("an assistant error with partial text is a failure and is not cached", asyn
     expect(h.names().filter((n) => n === "create")).toHaveLength(round); // describer re-invoked, nothing cached
   }
 });
+
+test("cache hit skips limiter: cached and in-flight duplicate images resolve without taking a slot", async () => {
+  const h = harness();
+  await h.eyesight.setup(h.host);
+  const image = (n: number) => ({
+    type: "media",
+    media: { source: { type: "base64", data: Buffer.from([n]).toString("base64"), mediaType: "image/png" }, mediaType: "image/png" },
+  });
+  const textAt = (e: ReturnType<typeof request>) => (e.messages[0].content[0] as any).text as string;
+  const creates = () => h.names().filter((n) => n === "create").length;
+
+  const warm = request(TEXT_MODEL, [image(1)]);
+  await h.hooks.get("context")!(warm); // image 1 is now cached
+  expect(creates()).toBe(1);
+
+  // From now on every vision call hangs until released, so four misses hold all four slots.
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  h.host.session.wait = async () => gate;
+  const misses = [2, 3, 4, 5].map((n) => {
+    const e = request(TEXT_MODEL, [image(n)]);
+    return { e, done: h.hooks.get("context")!(e) };
+  });
+  await new Promise((r) => setTimeout(r, 30));
+  expect(creates()).toBe(5); // 1 warm + 4 in flight, all slots taken
+
+  const hit = request(TEXT_MODEL, [image(1)]);
+  await h.hooks.get("context")!(hit); // resolves although every slot is busy
+  expect(textAt(hit)).toContain("KESTREL 7Q93");
+
+  const dup = request(TEXT_MODEL, [image(2)]); // duplicate of an in-flight image: joins it
+  const dupDone = h.hooks.get("context")!(dup);
+  await new Promise((r) => setTimeout(r, 30));
+  expect(creates()).toBe(5); // no extra session, no extra slot
+
+  release();
+  await Promise.all([dupDone, ...misses.map((m) => m.done)]);
+  expect(textAt(dup)).toContain("KESTREL 7Q93");
+  for (const m of misses) expect(textAt(m.e)).toContain("KESTREL 7Q93");
+  expect(creates()).toBe(5);
+});

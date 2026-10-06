@@ -51,8 +51,10 @@ export function createEyesight(deps: Deps = {}) {
       }
 
       const internal = new Set<string>();
-      const describe = withLimit(
-        withCache(createDescriber(ctx.session, settings, internal, log, deps.timeoutMs, debug), `${settings.model.providerID}/${settings.model.id}`),
+      // Cache outside the limiter: a cache hit, or a duplicate of an in-flight image, never waits for a slot.
+      const describe = withCache(
+        withLimit(createDescriber(ctx.session, settings, internal, log, deps.timeoutMs, debug)),
+        `${settings.model.providerID}/${settings.model.id}`,
       );
       const nonce = randomBytes(8).toString("hex");
       const capability = new Map<string, boolean>();

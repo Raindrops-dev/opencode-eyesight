@@ -70,8 +70,9 @@ Descriptions are cached in memory by the hash of the image and the model (at mos
   `[image omitted: reason]`.
 - The vision session has no tools. Its permissions deny everything, and the plugin also removes all
   tools from its requests.
-- Each vision call has a 120 second limit. If it fails, the image becomes
-  `[image could not be transcribed: reason]`. The request is never blocked.
+- A failed description never stops the request: the image becomes
+  `[image could not be transcribed: reason]`. A request waits while its new images are described, at most 4
+  at a time. Each call has a 120-second limit, plus up to 5 seconds to remove its session.
 - The vision model is called for the images of every request of a text-only model, including old
   messages. The cache means that each image is described once for each process.
   Vision sessions use the models and quotas of the provider you choose.
