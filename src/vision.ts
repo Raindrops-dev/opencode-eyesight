@@ -71,7 +71,7 @@ export interface VisionSession {
   wait(input: { sessionID: string }): Promise<void>;
   context(input: { sessionID: string }): Promise<readonly any[]>;
   // Stops unfinished work only; the session and its history are never removed.
-  interrupt(input: { sessionID: string; continue: false }): Promise<unknown>;
+  interrupt(input: { sessionID: string; resume: false }): Promise<unknown>;
 }
 
 /** Text of the last assistant message, or throws a short VisionError. */
@@ -109,7 +109,7 @@ export function createDescriber(
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
-        session.interrupt({ sessionID, continue: false }),
+        session.interrupt({ sessionID, resume: false }),
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => reject(new VisionError("interrupt timed out")), cleanupMs);
         }),

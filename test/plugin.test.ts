@@ -201,7 +201,7 @@ test("a failed session is interrupted, never removed, and the failure text is sh
     expect(JSON.stringify(event)).not.toContain("secret failure");
     expect(h.removed).toEqual([]);
     expect(h.names().filter((n) => n === "interrupt")).toHaveLength(1);
-    expect(h.calls.find((c) => c.name === "interrupt")!.input).toEqual({ sessionID: "vision-1", continue: false });
+    expect(h.calls.find((c) => c.name === "interrupt")!.input).toEqual({ sessionID: "vision-1", resume: false });
   }
 });
 

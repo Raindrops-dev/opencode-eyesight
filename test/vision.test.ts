@@ -65,13 +65,13 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** A session whose remove() is a tripwire: history must never be deleted. */
 function fake(over: Record<string, unknown> = {}) {
   const calls: string[] = [];
-  const interrupted: { sessionID: string; continue: false }[] = [];
+  const interrupted: { sessionID: string; resume: false }[] = [];
   const session = {
     create: async () => (calls.push("create"), { id: "s1" }),
     prompt: async () => void calls.push("prompt"),
     wait: async () => void calls.push("wait"),
     context: async () => (calls.push("context"), [{ type: "assistant", content: [{ type: "text", text: "ok" }] }]),
-    interrupt: async (input: { sessionID: string; continue: false }) => void interrupted.push(input),
+    interrupt: async (input: { sessionID: string; resume: false }) => void interrupted.push(input),
     remove: () => {
       throw new Error("session.remove must never be called");
     },
@@ -93,7 +93,7 @@ test("an error interrupts the owned session once, never removes it, and releases
   const internal = new Set<string>();
   await expect(createDescriber(f.session, SETTINGS, internal, () => {})(IMAGE)).rejects.toThrow("boom");
   await sleep(10);
-  expect(f.interrupted).toEqual([{ sessionID: "s1", continue: false }]);
+  expect(f.interrupted).toEqual([{ sessionID: "s1", resume: false }]);
   expect(internal.size).toBe(0);
 });
 
@@ -103,7 +103,7 @@ test("a session created after the timeout is interrupted once it appears, never 
   const describe = createDescriber(f.session, SETTINGS, internal, () => {}, 10);
   await expect(describe(IMAGE)).rejects.toThrow("timed out");
   await sleep(100);
-  expect(f.interrupted).toEqual([{ sessionID: "late", continue: false }]);
+  expect(f.interrupted).toEqual([{ sessionID: "late", resume: false }]);
   expect(f.calls).not.toContain("prompt"); // nothing was sent to a late session
   expect(internal.size).toBe(0);
 });
@@ -129,7 +129,7 @@ test("a timed-out wait is interrupted and the guard stays until the work settles
   const internal = new Set<string>();
   const describe = createDescriber(f.session, SETTINGS, internal, () => {}, 20);
   await expect(describe(IMAGE)).rejects.toThrow("timed out");
-  expect(f.interrupted).toEqual([{ sessionID: "s1", continue: false }]);
+  expect(f.interrupted).toEqual([{ sessionID: "s1", resume: false }]);
   expect(internal.has("s1")).toBe(true);
   release();
   await sleep(20);
@@ -146,4 +146,22 @@ test("an interrupt() that never settles does not block beyond the cleanup deadli
   expect(Date.now() - started).toBeLessThan(500);
   expect(internal.has("s1")).toBe(true); // unconfirmed stop: fail closed
   expect(logs).toEqual(["could not interrupt vision session: interrupt timed out"]);
+});
+
+// Offline contract check against the pinned native declaration (OpenCode v2.0.26, commit 9b4ec5714d481559990db0a816d5dec19541a814,
+// packages/client/src/promise/generated/types.ts). The published plugin doc's `continue: false` is stale; the field is `resume`.
+const PINNED_SESSION_INTERRUPT_INPUT = `export type SessionInterruptInput = {
+  readonly sessionID: { readonly sessionID: string }["sessionID"]
+  readonly resume?: { readonly resume?: boolean | undefined }["resume"]
+}`;
+
+test("interrupt is called with exactly the fields of the pinned native SessionInterruptInput", async () => {
+  const declared = [...PINNED_SESSION_INTERRUPT_INPUT.matchAll(/^  readonly (\w+)\??:/gm)].map((m) => m[1]);
+  expect(declared).toEqual(["sessionID", "resume"]);
+  const f = fake({ wait: async () => { throw new Error("boom"); } });
+  await expect(createDescriber(f.session, SETTINGS, new Set<string>(), () => {})(IMAGE)).rejects.toThrow("boom");
+  await sleep(10);
+  expect(f.interrupted).toHaveLength(1);
+  for (const key of Object.keys(f.interrupted[0])) expect(declared).toContain(key);
+  expect(f.interrupted[0]).toEqual({ sessionID: "s1", resume: false });
 });
