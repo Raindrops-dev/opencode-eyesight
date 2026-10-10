@@ -71,7 +71,7 @@ export interface VisionSession {
   wait(input: { sessionID: string }): Promise<void>;
   context(input: { sessionID: string }): Promise<readonly any[]>;
   // Stops unfinished work only; the session and its history are never removed.
-  interrupt(input: { sessionID: string; resume: false }): Promise<unknown>;
+  interrupt(input: { sessionID: string; resume: false }): Promise<{ interrupted: boolean }>;
 }
 
 /** Text of the last assistant message, or throws a short VisionError. */
@@ -104,16 +104,20 @@ export function createDescriber(
   cleanupMs = CLEANUP_TIMEOUT_MS,
 ) {
   // Stops an unfinished request without removing the session. Never blocks longer than cleanupMs.
-  // Returns true only when the interrupt was confirmed.
+  // Returns true only when the host reports interrupted: true; interrupted: false is not a confirmation.
   const stop = async (sessionID: string): Promise<boolean> => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      await Promise.race([
+      const result = await Promise.race([
         session.interrupt({ sessionID, resume: false }),
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => reject(new VisionError("interrupt timed out")), cleanupMs);
         }),
       ]);
+      if (result?.interrupted !== true) {
+        log("could not interrupt vision session: not confirmed");
+        return false;
+      }
       if (debug) log("interrupted vision session");
       return true;
     } catch (error) {

@@ -71,7 +71,7 @@ function fake(over: Record<string, unknown> = {}) {
     prompt: async () => void calls.push("prompt"),
     wait: async () => void calls.push("wait"),
     context: async () => (calls.push("context"), [{ type: "assistant", content: [{ type: "text", text: "ok" }] }]),
-    interrupt: async (input: { sessionID: string; resume: false }) => void interrupted.push(input),
+    interrupt: async (input: { sessionID: string; resume: false }) => (interrupted.push(input), { interrupted: true }),
     remove: () => {
       throw new Error("session.remove must never be called");
     },
@@ -146,6 +146,27 @@ test("an interrupt() that never settles does not block beyond the cleanup deadli
   expect(Date.now() - started).toBeLessThan(500);
   expect(internal.has("s1")).toBe(true); // unconfirmed stop: fail closed
   expect(logs).toEqual(["could not interrupt vision session: interrupt timed out"]);
+});
+
+test("an interrupt answered with interrupted:false keeps the id guarded, even after the work settled", async () => {
+  const logs: string[] = [];
+  const f = fake({ wait: async () => { throw new Error("boom"); }, interrupt: async () => ({ interrupted: false }) });
+  const internal = new Set<string>();
+  await expect(createDescriber(f.session, SETTINGS, internal, (m) => logs.push(m), 20, true)(IMAGE)).rejects.toThrow("boom");
+  await sleep(20);
+  expect(internal.has("s1")).toBe(true);
+  expect(logs).not.toContain("interrupted vision session");
+});
+
+test("the guard is released once a follow-up interrupt is confirmed after interrupted:false", async () => {
+  const answers = [false, true];
+  let attempts = 0;
+  const f = fake({ wait: async () => { throw new Error("boom"); }, interrupt: async () => ({ interrupted: answers[attempts++] ?? true }) });
+  const internal = new Set<string>();
+  await expect(createDescriber(f.session, SETTINGS, internal, () => {})(IMAGE)).rejects.toThrow("boom");
+  await sleep(20);
+  expect(attempts).toBe(2);
+  expect(internal.size).toBe(0);
 });
 
 // Offline contract check against the pinned native declaration (OpenCode v2.0.26, commit 9b4ec5714d481559990db0a816d5dec19541a814,

@@ -59,7 +59,7 @@ function harness(
           },
         ]
       ),
-      interrupt: async (input) => step("interrupt", input),
+      interrupt: async (input) => (step("interrupt", input), { interrupted: true }),
     },
   };
   // Tripwire: history is never deleted, so any call to remove (or a delete-like name) fails the test.
