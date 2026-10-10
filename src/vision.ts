@@ -70,7 +70,8 @@ export interface VisionSession {
   prompt(input: { sessionID: string; text: string; files: { uri: string; name: string }[] }): Promise<unknown>;
   wait(input: { sessionID: string }): Promise<void>;
   context(input: { sessionID: string }): Promise<readonly any[]>;
-  remove(input: { sessionID: string }): Promise<void>;
+  // Stops unfinished work only; the session and its history are never removed.
+  interrupt(input: { sessionID: string; resume: false }): Promise<unknown>;
 }
 
 /** Text of the last assistant message, or throws a short VisionError. */
@@ -102,28 +103,32 @@ export function createDescriber(
   debug = false,
   cleanupMs = CLEANUP_TIMEOUT_MS,
 ) {
-  // Removal never blocks the request for longer than cleanupMs; a hung remove is logged and given up on.
-  const cleanup = async (sessionID: string) => {
+  // Stops an unfinished request without removing the session. Never blocks longer than cleanupMs.
+  // Returns true only when the interrupt was confirmed.
+  const stop = async (sessionID: string): Promise<boolean> => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
-        session.remove({ sessionID }),
+        session.interrupt({ sessionID, resume: false }),
         new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new VisionError("remove timed out")), cleanupMs);
+          timer = setTimeout(() => reject(new VisionError("interrupt timed out")), cleanupMs);
         }),
       ]);
-      if (debug) log("removed vision session");
+      if (debug) log("interrupted vision session");
+      return true;
     } catch (error) {
-      log(`could not remove vision session: ${error instanceof VisionError ? error.message : error instanceof Error ? error.name : "error"}`);
+      log(`could not interrupt vision session: ${error instanceof VisionError ? error.message : error instanceof Error ? error.name : "error"}`);
+      return false;
     } finally {
       clearTimeout(timer);
-      internal.delete(sessionID);
     }
   };
 
   return async (image: { base64: string; mime: string }): Promise<string> => {
     let sessionID: string | undefined;
     let abandoned = false;
+    let settled = false;
+    let ok = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     const work = (async () => {
@@ -134,28 +139,48 @@ export function createDescriber(
       });
       sessionID = created.id;
       internal.add(sessionID);
+      // After an abandon no further request may be admitted, so check between every step.
       if (abandoned) return "";
       await session.prompt({
         sessionID,
         text: REQUEST_TEXT,
         files: [{ uri: `data:${image.mime};base64,${image.base64}`, name: "image" }],
       });
+      if (abandoned) return "";
       await session.wait({ sessionID });
+      if (abandoned) return "";
       return assistantText(await session.context({ sessionID }));
     })();
+    const done = work.then(
+      () => {},
+      () => {},
+    ).then(() => void (settled = true));
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(() => reject(new VisionError("vision model timed out")), timeoutMs);
     });
 
     try {
-      return await Promise.race([work, timeout]);
+      const text = await Promise.race([work, timeout]);
+      ok = true;
+      return text;
     } finally {
       abandoned = true;
       clearTimeout(timer);
-      work.catch(() => {});
-      // If create() is still pending, remove the session once it appears.
-      if (sessionID) await cleanup(sessionID);
-      else void work.then(() => (sessionID ? cleanup(sessionID) : undefined), () => {});
+      if (ok) {
+        // The exchange completed; the session and its history stay.
+        if (sessionID) internal.delete(sessionID);
+      } else {
+        // Unfinished or failed: stop the owned request, never remove the session. The prompt may still be
+        // admitted after this point, so keep the guard and interrupt again once the work has settled.
+        const unsettled = !settled;
+        let stopped = sessionID ? await stop(sessionID) : false;
+        void (async () => {
+          await done;
+          if (sessionID && (unsettled || !stopped)) stopped = await stop(sessionID);
+          // An unconfirmed interrupt leaves the id guarded (tool-free) rather than risk a tool-capable orphan.
+          if (sessionID && stopped) internal.delete(sessionID);
+        })();
+      }
     }
   };
 }
